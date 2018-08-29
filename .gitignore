@@ -4,8 +4,9 @@
 *.egg
 *.egg-info
 dist
+cymysql
 build
-eggs
+eggsinitcfg.sh
 parts
 bin
 var
