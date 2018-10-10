@@ -705,7 +705,7 @@ class DbMSKTransfer(DbTransfer):
 
 		try:
 			rows = []
-			cur.execute("SELECT " + ','.join(keys) + " FROM user")
+			cur.execute("SELECT " + ','.join(keys) + " FROM user where nid="+self.cfg["node_id"])
 			for r in cur.fetchall():
 				d = {}
 				for column in range(len(keys)):
