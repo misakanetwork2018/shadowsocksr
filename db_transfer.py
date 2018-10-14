@@ -309,7 +309,7 @@ class DbTransfer(TransferBase):
 	def update_all_user(self, dt_transfer):
 		import cymysql
 		update_transfer = {}
-		
+
 		query_head = 'UPDATE user'
 		query_sub_when = ''
 		query_sub_when2 = ''
@@ -409,226 +409,6 @@ class DbTransfer(TransferBase):
 		cur.close()
 		return rows
 
-class Dbv3Transfer(DbTransfer):
-	def __init__(self):
-		super(Dbv3Transfer, self).__init__()
-		self.update_node_state = True if get_config().API_INTERFACE != 'legendsockssr' else False
-		if self.update_node_state:
-			self.key_list += ['id']
-		self.key_list += ['method']
-		if self.update_node_state:
-			self.ss_node_info_name = 'ss_node_info_log'
-			if get_config().API_INTERFACE == 'sspanelv3ssr':
-				self.key_list += ['obfs', 'protocol']
-			if get_config().API_INTERFACE == 'glzjinmod':
-				self.key_list += ['obfs', 'protocol']
-				self.ss_node_info_name = 'ss_node_info'
-		else:
-			self.key_list += ['obfs', 'protocol']
-		self.start_time = time.time()
-
-	def update_all_user(self, dt_transfer):
-		import cymysql
-		update_transfer = {}
-
-		query_head = 'UPDATE user'
-		query_sub_when = ''
-		query_sub_when2 = ''
-		query_sub_in = None
-		last_time = time.time()
-
-		alive_user_count = len(self.onlineuser_cache)
-		bandwidth_thistime = 0
-
-		if self.cfg["ssl_enable"] == 1:
-			conn = cymysql.connect(host=self.cfg["host"], port=self.cfg["port"],
-					user=self.cfg["user"], passwd=self.cfg["password"],
-					db=self.cfg["db"], charset='utf8',
-					ssl={'ca':self.cfg["ssl_ca"],'cert':self.cfg["ssl_cert"],'key':self.cfg["ssl_key"]})
-		else:
-			conn = cymysql.connect(host=self.cfg["host"], port=self.cfg["port"],
-					user=self.cfg["user"], passwd=self.cfg["password"],
-					db=self.cfg["db"], charset='utf8')
-		conn.autocommit(True)
-
-		for id in dt_transfer.keys():
-			transfer = dt_transfer[id]
-			bandwidth_thistime = bandwidth_thistime + transfer[0] + transfer[1]
-
-			update_trs = 1024 * (2048 - self.user_pass.get(id, 0) * 64)
-			if transfer[0] + transfer[1] < update_trs:
-				self.user_pass[id] = self.user_pass.get(id, 0) + 1
-				continue
-			if id in self.user_pass:
-				del self.user_pass[id]
-
-			query_sub_when += ' WHEN %s THEN u+%s' % (id, int(transfer[0] * self.cfg["transfer_mul"]))
-			query_sub_when2 += ' WHEN %s THEN d+%s' % (id, int(transfer[1] * self.cfg["transfer_mul"]))
-			update_transfer[id] = transfer
-
-			if self.update_node_state:
-				cur = conn.cursor()
-				try:
-					if id in self.port_uid_table:
-						cur.execute("INSERT INTO `user_traffic_log` (`id`, `user_id`, `u`, `d`, `node_id`, `rate`, `traffic`, `log_time`) VALUES (NULL, '" + \
-							str(self.port_uid_table[id]) + "', '" + str(transfer[0]) + "', '" + str(transfer[1]) + "', '" + \
-							str(self.cfg["node_id"]) + "', '" + str(self.cfg["transfer_mul"]) + "', '" + \
-							self.traffic_format((transfer[0] + transfer[1]) * self.cfg["transfer_mul"]) + "', unix_timestamp()); ")
-				except:
-					logging.warn('no `user_traffic_log` in db')
-				cur.close()
-
-			if query_sub_in is not None:
-				query_sub_in += ',%s' % id
-			else:
-				query_sub_in = '%s' % id
-
-		if query_sub_when != '':
-			query_sql = query_head + ' SET u = CASE port' + query_sub_when + \
-						' END, d = CASE port' + query_sub_when2 + \
-						' END, t = ' + str(int(last_time)) + \
-						' WHERE port IN (%s)' % query_sub_in
-			cur = conn.cursor()
-			try:
-				cur.execute(query_sql)
-			except Exception as e:
-				logging.error(e)
-			cur.close()
-
-		if self.update_node_state:
-			try:
-				cur = conn.cursor()
-				try:
-					cur.execute("INSERT INTO `ss_node_online_log` (`id`, `node_id`, `online_user`, `log_time`) VALUES (NULL, '" + \
-						str(self.cfg["node_id"]) + "', '" + str(alive_user_count) + "', unix_timestamp()); ")
-				except Exception as e:
-					logging.error(e)
-				cur.close()
-
-				cur = conn.cursor()
-				try:
-					cur.execute("INSERT INTO `" + self.ss_node_info_name + "` (`id`, `node_id`, `uptime`, `load`, `log_time`) VALUES (NULL, '" + \
-						str(self.cfg["node_id"]) + "', '" + str(self.uptime()) + "', '" + \
-						str(self.load()) + "', unix_timestamp()); ")
-				except Exception as e:
-					logging.error(e)
-				cur.close()
-			except:
-				logging.warn('no `ss_node_online_log` or `" + self.ss_node_info_name + "` in db')
-
-		conn.close()
-		return update_transfer
-
-	def pull_db_users(self, conn):
-		try:
-			switchrule = importloader.load('switchrule')
-			keys = switchrule.getKeys(self.key_list)
-		except Exception as e:
-			keys = self.key_list
-
-		cur = conn.cursor()
-
-		if self.update_node_state:
-			node_info_keys = ['traffic_rate']
-			try:
-				cur.execute("SELECT " + ','.join(node_info_keys) +" FROM ss_node where `id`='" + str(self.cfg["node_id"]) + "'")
-				nodeinfo = cur.fetchone()
-			except Exception as e:
-				logging.error(e)
-				nodeinfo = None
-
-			if nodeinfo == None:
-				rows = []
-				cur.close()
-				conn.commit()
-				logging.warn('None result when select node info from ss_node in db, maybe you set the incorrect node id')
-				return rows
-			cur.close()
-
-			node_info_dict = {}
-			for column in range(len(nodeinfo)):
-				node_info_dict[node_info_keys[column]] = nodeinfo[column]
-			self.cfg['transfer_mul'] = float(node_info_dict['traffic_rate'])
-
-		cur = conn.cursor()
-		try:
-			rows = []
-			cur.execute("SELECT " + ','.join(keys) + " FROM user")
-			for r in cur.fetchall():
-				d = {}
-				for column in range(len(keys)):
-					d[keys[column]] = r[column]
-				rows.append(d)
-		except Exception as e:
-			logging.error(e)
-		cur.close()
-		return rows
-
-	def load(self):
-		import os
-		return os.popen("cat /proc/loadavg | awk '{ print $1\" \"$2\" \"$3 }'").readlines()[0]
-
-	def uptime(self):
-		return time.time() - self.start_time
-
-	def traffic_format(self, traffic):
-		if traffic < 1024 * 8:
-			return str(int(traffic)) + "B";
-
-		if traffic < 1024 * 1024 * 2:
-			return str(round((traffic / 1024.0), 2)) + "KB";
-
-		return str(round((traffic / 1048576.0), 2)) + "MB";
-
-class MuJsonTransfer(TransferBase):
-	def __init__(self):
-		super(MuJsonTransfer, self).__init__()
-
-	def update_all_user(self, dt_transfer):
-		import json
-		rows = None
-
-		config_path = get_config().MUDB_FILE
-		with open(config_path, 'rb+') as f:
-			rows = json.loads(f.read().decode('utf8'))
-			for row in rows:
-				if "port" in row:
-					port = row["port"]
-					if port in dt_transfer:
-						row["u"] += dt_transfer[port][0]
-						row["d"] += dt_transfer[port][1]
-
-		if rows:
-			output = json.dumps(rows, sort_keys=True, indent=4, separators=(',', ': '))
-			with open(config_path, 'r+') as f:
-				f.write(output)
-				f.truncate()
-
-		return dt_transfer
-
-	def pull_db_all_user(self):
-		import json
-		rows = None
-
-		config_path = get_config().MUDB_FILE
-		with open(config_path, 'rb+') as f:
-			rows = json.loads(f.read().decode('utf8'))
-			for row in rows:
-				try:
-					if 'forbidden_ip' in row:
-						row['forbidden_ip'] = common.IPNetwork(row['forbidden_ip'])
-				except Exception as e:
-					logging.error(e)
-				try:
-					if 'forbidden_port' in row:
-						row['forbidden_port'] = common.PortRange(row['forbidden_port'])
-				except Exception as e:
-					logging.error(e)
-
-		if not rows:
-			logging.warn('no user in json file')
-		return rows
-
 class DbMSKTransfer(DbTransfer):
 	def __init__(self):
 		super(DbMSKTransfer, self).__init__()
@@ -702,10 +482,10 @@ class DbMSKTransfer(DbTransfer):
 			keys = self.key_list
 
 		cur = conn.cursor()
+		rows = []
 
 		try:
-			rows = []
-			cur.execute("SELECT " + ','.join(keys) + " FROM user where nid="+self.cfg["node_id"])
+			cur.execute("SELECT " + ','.join(keys) + " FROM user where nid=" + str(self.cfg["node_id"]))
 			for r in cur.fetchall():
 				d = {}
 				for column in range(len(keys)):
